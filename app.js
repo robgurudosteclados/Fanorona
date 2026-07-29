@@ -1,0 +1,891 @@
+(function(){
+
+  "use strict";
+  const ROWS=5, COLS=9, N=ROWS*COLS;
+  function rc(i){ return [Math.floor(i/COLS), i%COLS]; }
+  function idx(r,c){ return r*COLS+c; }
+  function inBounds(r,c){ return r>=0&&r<ROWS&&c>=0&&c<COLS; }
+  const DIRS=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  function isDiag(d){ return d[0]!==0 && d[1]!==0; }
+  function pointAllowsDiag(i){ const [r,c]=rc(i); return (r+c)%2===0; }
+  function getLegalDirs(i){
+    const [r,c]=rc(i);
+    return DIRS.filter(d=>{
+      if(isDiag(d) && !pointAllowsDiag(i)) return false;
+      const nr=r+d[1], nc=c+d[0];
+      return inBounds(nr,nc);
+    });
+  }
+  function other(p){ return p==='W'?'B':'W'; }
+
+  function initialBoard(){
+    const b = new Array(N).fill(null);
+    for(let c=0;c<COLS;c++){ b[idx(0,c)]='W'; b[idx(1,c)]='W'; b[idx(3,c)]='B'; b[idx(4,c)]='B'; }
+    const row2 = ['W','B','W','B',null,'B','W','B','W'];
+    for(let c=0;c<COLS;c++){ b[idx(2,c)] = row2[c]; }
+    return b;
+  }
+
+  function findStepOptions(board, from, dir, player){
+    const opp = other(player);
+    const [r,c]=rc(from);
+    const tc=c+dir[0], tr=r+dir[1];
+    if(!inBounds(tr,tc)) return null;
+    const to = idx(tr,tc);
+    if(board[to]!==null) return null;
+    let approachCaptured=[];
+    let cr=tr+dir[1], cc=tc+dir[0];
+    while(inBounds(cr,cc) && board[idx(cr,cc)]===opp){ approachCaptured.push(idx(cr,cc)); cr+=dir[1]; cc+=dir[0]; }
+    let withdrawCaptured=[];
+    let br=r-dir[1], bc=c-dir[0];
+    while(inBounds(br,bc) && board[idx(br,bc)]===opp){ withdrawCaptured.push(idx(br,bc)); br-=dir[1]; bc-=dir[0]; }
+    const options=[];
+    if(approachCaptured.length) options.push({type:'approach', to, captured:approachCaptured, dir});
+    if(withdrawCaptured.length) options.push({type:'withdraw', to, captured:withdrawCaptured, dir});
+    if(options.length===0) options.push({type:'paika', to, captured:[], dir});
+    return options;
+  }
+
+  function topLevelMoves(board, player){
+    let captureMoves=[], paikaMoves=[];
+    for(let i=0;i<N;i++){
+      if(board[i]!==player) continue;
+      for(const d of getLegalDirs(i)){
+        const opts = findStepOptions(board,i,d,player);
+        if(!opts) continue;
+        for(const o of opts){
+          if(o.type==='paika') paikaMoves.push({from:i, ...o});
+          else captureMoves.push({from:i, ...o});
+        }
+      }
+    }
+    return {captureMoves, paikaMoves};
+  }
+
+  function applyStep(board, step, player){
+    const nb = board.slice();
+    nb[step.from]=null;
+    nb[step.to]=player;
+    for(const cap of step.captured) nb[cap]=null;
+    return nb;
+  }
+
+  function expandChains(board, player, firstStep){
+    const results=[];
+    function rec(curBoard, piecePos, path, visited, lastDir){
+      results.push(path.slice());
+      for(const d of getLegalDirs(piecePos)){
+        if(lastDir && d[0]===lastDir[0] && d[1]===lastDir[1]) continue;
+        const opts = findStepOptions(curBoard, piecePos, d, player);
+        if(!opts) continue;
+        for(const o of opts){
+          if(o.type==='paika') continue;
+          if(visited.has(o.to)) continue;
+          const nb = applyStep(curBoard, {from:piecePos, ...o}, player);
+          const nv = new Set(visited); nv.add(o.to);
+          rec(nb, o.to, [...path, {from:piecePos, ...o}], nv, d);
+        }
+      }
+    }
+    const nb0 = applyStep(board, firstStep, player);
+    const v0 = new Set([firstStep.from, firstStep.to]);
+    rec(nb0, firstStep.to, [firstStep], v0, firstStep.dir);
+    return results;
+  }
+
+  function getAllFullMoves(board, player){
+    const {captureMoves, paikaMoves} = topLevelMoves(board, player);
+    if(captureMoves.length>0){
+      let seqs=[];
+      for(const cm of captureMoves) seqs = seqs.concat(expandChains(board, player, cm));
+      return seqs;
+    }
+    return paikaMoves.map(m=>[m]);
+  }
+
+  function applySequence(board, seq, player){
+    let b = board;
+    for(const step of seq) b = applyStep(b, step, player);
+    return b;
+  }
+
+  function evaluate(board, aiColor){
+    const humanColor = other(aiColor);
+    let score=0;
+    for(let i=0;i<N;i++){
+      if(board[i]===aiColor) score+=10;
+      else if(board[i]===humanColor) score-=10;
+    }
+    return score;
+  }
+
+  function minimax(board, player, depth, alpha, beta, aiColor){
+    const moves = getAllFullMoves(board, player);
+    const isAI = player===aiColor;
+    if(depth===0 || moves.length===0){
+      let val = evaluate(board, aiColor);
+      if(moves.length===0) val += isAI? -500 : 500;
+      return val;
+    }
+    if(isAI){
+      let best=-Infinity;
+      for(const seq of moves){
+        const nb = applySequence(board, seq, player);
+        const val = minimax(nb, other(player), depth-1, alpha, beta, aiColor);
+        if(val>best) best=val;
+        if(best>alpha) alpha=best;
+        if(alpha>=beta) break;
+      }
+      return best;
+    } else {
+      let best=Infinity;
+      for(const seq of moves){
+        const nb = applySequence(board, seq, player);
+        const val = minimax(nb, other(player), depth-1, alpha, beta, aiColor);
+        if(val<best) best=val;
+        if(best<beta) beta=best;
+        if(alpha>=beta) break;
+      }
+      return best;
+    }
+  }
+
+  function chooseAIMove(board, difficulty, aiColor){
+    const moves = getAllFullMoves(board, aiColor);
+    if(moves.length===0) return null;
+    if(difficulty==='easy'){
+      // mostly random, tiny bias away from giving away material
+      return moves[Math.floor(Math.random()*moves.length)];
+    }
+    if(difficulty==='medium'){
+      let best=-Infinity, bestSeqs=[];
+      for(const seq of moves){
+        const captured = seq.reduce((s,st)=>s+st.captured.length,0);
+        const noise = Math.random()*0.5;
+        const val = captured + noise;
+        if(val>best+0.001){ best=val; bestSeqs=[seq]; }
+        else if(Math.abs(val-best)<0.001){ bestSeqs.push(seq); }
+      }
+      return bestSeqs[Math.floor(Math.random()*bestSeqs.length)];
+    }
+    // hard: minimax depth 3 with alpha-beta
+    const humanColor = other(aiColor);
+    let bestVal=-Infinity, bestSeqs=[];
+    for(const seq of moves){
+      const nb = applySequence(board, seq, aiColor);
+      const val = minimax(nb, humanColor, 3, -Infinity, Infinity, aiColor);
+      if(val>bestVal){ bestVal=val; bestSeqs=[seq]; }
+      else if(val===bestVal){ bestSeqs.push(seq); }
+    }
+    return bestSeqs[Math.floor(Math.random()*bestSeqs.length)];
+  }
+
+  // ---------- Música (Web Audio, sem arquivos externos) ----------
+  // Duas identidades sonoras (8-bit / polifônica), 3 faixas cada, ~16s por loop.
+  const MusicLib = (function(){
+    const SEMI = {C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
+    function noteFreq(note){
+      const m = /^([A-G][#b]?)(\d)$/.exec(note);
+      if(!m) return 440;
+      const semi = SEMI[m[1]];
+      const oct = parseInt(m[2],10);
+      return 440 * Math.pow(2, (oct-4) + (semi-9)/12);
+    }
+
+    // ---- Faixas 8-bit: arpejo sobre progressão de acordes, timbres square/triangle ----
+    function build8bitTrack(rootNotes, offsets){
+      const stepDur = 0.125;          // 128 passos * 0.125s = 16s
+      const totalSteps = 128;
+      const stepsPerChord = totalSteps / rootNotes.length;
+      const steps = new Array(totalSteps).fill(null);
+      for(let c=0;c<rootNotes.length;c++){
+        const rootFreq = noteFreq(rootNotes[c]);
+        for(let s=0;s<stepsPerChord;s++){
+          const g = c*stepsPerChord + s;
+          const offset = offsets[s % offsets.length];
+          const freq = rootFreq * Math.pow(2, offset/12);
+          steps[g] = steps[g] || [];
+          steps[g].push({freq, type:'square', gain:0.8, durSteps:1.7});
+          if(s===0) steps[g].push({freq: rootFreq/2, type:'triangle', gain:1.0, durSteps: stepsPerChord*0.9});
+          if(s===Math.floor(stepsPerChord/2)) steps[g].push({freq: rootFreq/2, type:'triangle', gain:0.8, durSteps: stepsPerChord*0.45});
+        }
+      }
+      return {stepDur, totalSteps, steps};
+    }
+
+    // ---- Faixas polifônicas: acordes sustentados + nota melódica no topo ----
+    function buildPolyTrack(chords){
+      const stepDur = 0.2;            // 80 passos * 0.2s = 16s
+      const totalSteps = 80;
+      const stepsPerChord = totalSteps / chords.length;
+      const steps = new Array(totalSteps).fill(null);
+      for(let c=0;c<chords.length;c++){
+        const chordNotes = chords[c];
+        const start = c*stepsPerChord;
+        steps[start] = steps[start] || [];
+        for(const n of chordNotes){
+          steps[start].push({freq: noteFreq(n), type:'sine', gain:0.5, durSteps: stepsPerChord*0.92});
+        }
+        const mid = start + Math.floor(stepsPerChord*0.5);
+        steps[mid] = steps[mid] || [];
+        const top = chordNotes[chordNotes.length-1];
+        steps[mid].push({freq: noteFreq(top)*2, type:'triangle', gain:0.32, durSteps: stepsPerChord*0.4});
+      }
+      return {stepDur, totalSteps, steps};
+    }
+
+    const tracks = {
+      '8bit': [
+        { name:'Chiptune I',   data: build8bitTrack(['A3','F3','C4','G3'], [0,3,7,12,7,3,0,3]) },
+        { name:'Chiptune II',  data: build8bitTrack(['E3','C3','G3','D3'], [0,4,7,12,9,7,4,0]) },
+        { name:'Chiptune III', data: build8bitTrack(['G3','E3','A3','D3'], [0,7,3,10,7,3,0,7]) }
+      ],
+      'poly': [
+        { name:'Harmonia I',   data: buildPolyTrack([['A3','C4','E4','G4'],['F3','A3','C4','E4'],['C3','E3','G3','B3'],['G3','B3','D4','F4']]) },
+        { name:'Harmonia II',  data: buildPolyTrack([['D3','F3','A3','C4'],['G3','B3','D4','F4'],['C3','E3','G3','B3'],['A3','C4','E4','G4']]) },
+        { name:'Harmonia III', data: buildPolyTrack([['E3','G3','B3'],['C3','E3','G3'],['G3','B3','D4'],['D3','F#3','A3']]) }
+      ]
+    };
+    return { tracks };
+  })();
+
+  const MusicEngine = (function(){
+    let ctx=null, masterGain=null, playing=false, step=0, timer=null;
+    let currentStyle='8bit', currentIndex=0;
+
+    function ensureCtx(){
+      if(!ctx){
+        ctx = new (window.AudioContext||window.webkitAudioContext)();
+        masterGain = ctx.createGain();
+        masterGain.gain.value = 0.14;
+        masterGain.connect(ctx.destination);
+      }
+    }
+
+    function pluck(freq, dur, type, gainVal, delay){
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      const t0 = ctx.currentTime + delay;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(gainVal, t0+0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
+      osc.connect(g); g.connect(masterGain);
+      osc.start(t0);
+      osc.stop(t0+dur+0.02);
+    }
+
+    function currentTrack(){
+      return MusicLib.tracks[currentStyle][currentIndex].data;
+    }
+
+    function scheduleStep(){
+      const track = currentTrack();
+      const notes = track.steps[step % track.totalSteps];
+      if(notes){
+        for(const n of notes) pluck(n.freq, n.durSteps*track.stepDur, n.type, n.gain, 0);
+      }
+      step++;
+    }
+
+    function tick(){
+      if(!playing) return;
+      const track = currentTrack();
+      scheduleStep();
+      timer = setTimeout(tick, track.stepDur*1000);
+    }
+
+    function start(){
+      ensureCtx();
+      if(ctx.state==='suspended') ctx.resume();
+      if(playing) return;
+      playing = true;
+      step = 0;
+      tick();
+    }
+    function stop(){
+      playing = false;
+      if(timer) clearTimeout(timer);
+    }
+    function restart(){
+      if(!playing) return;
+      if(timer) clearTimeout(timer);
+      step = 0;
+      tick();
+    }
+    function setTrack(style, index){
+      currentStyle = style;
+      currentIndex = index;
+      restart();
+    }
+    function blip(freq, type){
+      ensureCtx();
+      if(ctx.state==='suspended') ctx.resume();
+      pluck(freq, 0.16, type||'square', 0.5, 0);
+    }
+    function playJingle(result){
+      ensureCtx();
+      if(ctx.state==='suspended') ctx.resume();
+      if(result==='win'){
+        [523.25,659.25,783.99,1046.50].forEach((f,i)=> pluck(f, 0.38, 'square', 0.55, i*0.1));
+      } else if(result==='draw'){
+        [440.00,493.88,440.00].forEach((f,i)=> pluck(f, 0.32, 'triangle', 0.5, i*0.13));
+      } else if(result==='loss'){
+        [392.00,349.23,293.66,246.94].forEach((f,i)=> pluck(f, 0.42, 'triangle', 0.55, i*0.12));
+      }
+    }
+    return {
+      start, stop, blip, setTrack, playJingle,
+      get playing(){ return playing; },
+      get style(){ return currentStyle; },
+      get index(){ return currentIndex; },
+      get trackName(){ return MusicLib.tracks[currentStyle][currentIndex].name; }
+    };
+  })();
+
+  // ---------- Recordes (persistidos no navegador) ----------
+  const STATS_KEY = 'fanorona_stats_v1';
+  function loadStats(){
+    try{
+      const raw = localStorage.getItem(STATS_KEY);
+      if(raw) return JSON.parse(raw);
+    }catch(e){}
+    return { easy:{w:0,d:0,l:0}, medium:{w:0,d:0,l:0}, hard:{w:0,d:0,l:0} };
+  }
+  function saveStats(stats){
+    try{ localStorage.setItem(STATS_KEY, JSON.stringify(stats)); }catch(e){}
+  }
+  let stats = loadStats();
+  function renderStats(){
+    for(const diff of ['easy','medium','hard']){
+      document.getElementById('st-'+diff+'-w').textContent = stats[diff].w;
+      document.getElementById('st-'+diff+'-d').textContent = stats[diff].d;
+      document.getElementById('st-'+diff+'-l').textContent = stats[diff].l;
+    }
+  }
+  function recordResult(difficulty, result){
+    if(!stats[difficulty]) stats[difficulty] = {w:0,d:0,l:0};
+    if(result==='win') stats[difficulty].w++;
+    else if(result==='draw') stats[difficulty].d++;
+    else stats[difficulty].l++;
+    saveStats(stats);
+    renderStats();
+  }
+
+
+  const svg = document.getElementById('board-svg');
+  const PAD=60, SPX=90, SPY=90;
+  let flip = false;
+  function px(i){
+    const [r,c]=rc(i);
+    const rr = flip ? (ROWS-1-r) : r;
+    return [PAD + c*SPX, PAD + rr*SPY];
+  }
+
+  let state = null;
+
+  function newState(humanColor){
+    const aiColor = other(humanColor);
+    flip = (humanColor === 'W');
+    return {
+      board: initialBoard(),
+      humanColor,
+      aiColor,
+      turn: 'W', // Brancas sempre começam em Fanorona
+      difficulty: currentDiff(),
+      selected: null,
+      validTargets: [],
+      chain: null, // {piecePos, path, visited, lastDir}
+      gameOver: false,
+      aiThinking: false,
+      movesSinceCapture: 0,
+      currentTurnCaptured: 0
+    };
+  }
+  function currentDiff(){
+    const active = document.querySelector('.seg-btn[data-diff].active');
+    return active ? active.dataset.diff : 'medium';
+  }
+  function currentColorMode(){
+    const active = document.querySelector('.seg-btn[data-color].active');
+    return active ? active.dataset.color : 'random';
+  }
+
+  function buildBoardSVG(){
+    svg.innerHTML='';
+    const linesG = document.createElementNS('http://www.w3.org/2000/svg','g');
+    linesG.setAttribute('stroke', 'var(--line)');
+    linesG.setAttribute('stroke-opacity','0.55');
+    linesG.setAttribute('stroke-width','2');
+    for(let i=0;i<N;i++){
+      const [x1,y1]=px(i);
+      for(const d of getLegalDirs(i)){
+        if(d[0]<0 || (d[0]===0 && d[1]<0)) continue; // draw each edge once
+        const [r,c]=rc(i);
+        const j = idx(r+d[1], c+d[0]);
+        const [x2,y2]=px(j);
+        const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+        line.setAttribute('x1',x1); line.setAttribute('y1',y1);
+        line.setAttribute('x2',x2); line.setAttribute('y2',y2);
+        linesG.appendChild(line);
+      }
+    }
+    svg.appendChild(linesG);
+
+    const piecesG = document.createElementNS('http://www.w3.org/2000/svg','g');
+    piecesG.setAttribute('id','piecesG');
+    svg.appendChild(piecesG);
+
+    // defs for gradients
+    const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+    defs.innerHTML = `
+      <radialGradient id="gradW" cx="35%" cy="30%" r="70%">
+        <stop offset="0%" stop-color="#fffaf0"/>
+        <stop offset="55%" stop-color="#f0e9dc"/>
+        <stop offset="100%" stop-color="#b8a988"/>
+      </radialGradient>
+      <radialGradient id="gradB" cx="35%" cy="30%" r="70%">
+        <stop offset="0%" stop-color="#4a4038"/>
+        <stop offset="55%" stop-color="#17130f"/>
+        <stop offset="100%" stop-color="#000000"/>
+      </radialGradient>
+    `;
+    svg.insertBefore(defs, svg.firstChild);
+  }
+
+  function render(){
+    const piecesG = document.getElementById('piecesG');
+    piecesG.innerHTML='';
+
+    for(let i=0;i<N;i++){
+      const [x,y]=px(i);
+      // hit area
+      const hit = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      hit.setAttribute('cx',x); hit.setAttribute('cy',y); hit.setAttribute('r',22);
+      hit.setAttribute('fill','transparent');
+      hit.setAttribute('class','point-hit');
+      hit.dataset.idx = i;
+      hit.addEventListener('click', ()=>onPointClick(i));
+      piecesG.appendChild(hit);
+
+      const isSelected = state.selected===i || (state.chain && state.chain.piecePos===i);
+      const isValidTarget = state.validTargets.includes(i);
+
+      if(isValidTarget){
+        const ring = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        ring.setAttribute('cx',x); ring.setAttribute('cy',y); ring.setAttribute('r',16);
+        ring.setAttribute('fill', 'rgba(201,154,60,0.28)');
+        ring.setAttribute('stroke', 'var(--gold)');
+        ring.setAttribute('stroke-width','2');
+        ring.setAttribute('pointer-events','none');
+        piecesG.appendChild(ring);
+      }
+
+      const piece = state.board[i];
+      if(piece){
+        const dotShadow = document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+        dotShadow.setAttribute('cx',x); dotShadow.setAttribute('cy',y+4); dotShadow.setAttribute('rx',15); dotShadow.setAttribute('ry',5);
+        dotShadow.setAttribute('fill','rgba(0,0,0,0.35)');
+        dotShadow.setAttribute('pointer-events','none');
+        piecesG.appendChild(dotShadow);
+
+        const circ = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        circ.setAttribute('cx',x); circ.setAttribute('cy',y); circ.setAttribute('r',15.5);
+        circ.setAttribute('fill', piece==='W'? 'url(#gradW)' : 'url(#gradB)');
+        circ.setAttribute('stroke', isSelected? 'var(--gold)' : (piece==='W'? '#b8a988':'#3a2f28'));
+        circ.setAttribute('stroke-width', isSelected? 3 : 1.5);
+        circ.setAttribute('pointer-events','none');
+        piecesG.appendChild(circ);
+      } else {
+        const dot = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.setAttribute('r',4);
+        dot.setAttribute('fill','rgba(230,210,166,0.35)');
+        dot.setAttribute('pointer-events','none');
+        piecesG.appendChild(dot);
+      }
+    }
+
+    document.getElementById('countW').textContent = state.board.filter(p=>p==='W').length;
+    document.getElementById('countB').textContent = state.board.filter(p=>p==='B').length;
+
+    const chainControls = document.getElementById('chainControls');
+    chainControls.classList.toggle('hidden', !state.chain);
+    document.getElementById('forfeitBtn').disabled = state.gameOver;
+
+    const turnIndicator = document.getElementById('turnIndicator');
+    const colorName = c => c==='W' ? 'Brancas' : 'Pretas';
+    if(state.gameOver){
+      turnIndicator.innerHTML = '<span>Partida encerrada</span>';
+    } else if(state.turn===state.humanColor){
+      turnIndicator.innerHTML = '<span class="swatch '+state.humanColor.toLowerCase()+'"></span><span>Sua vez ('+colorName(state.humanColor)+')</span>';
+    } else {
+      turnIndicator.innerHTML = '<span class="swatch '+state.aiColor.toLowerCase()+'"></span><span>Vez da IA ('+colorName(state.aiColor)+')'+(state.aiThinking? ' · pensando…':'')+'</span>';
+    }
+  }
+
+  function setStatus(msg){ document.getElementById('statusMsg').textContent = msg; }
+  function addLog(msg){
+    const log = document.getElementById('log');
+    const line = document.createElement('div');
+    line.textContent = msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+  function coordLabel(i){
+    const [r,c]=rc(i);
+    return String.fromCharCode(65+c) + (r+1);
+  }
+
+  function computeValidTargetsForSelection(i){
+    // top level, respecting mandatory capture rule for the whole player
+    const {captureMoves} = topLevelMoves(state.board, state.humanColor);
+    const hasAnyCapture = captureMoves.length>0;
+    let opts;
+    if(hasAnyCapture){
+      opts = captureMoves.filter(m=>m.from===i);
+    } else {
+      const {paikaMoves} = topLevelMoves(state.board, state.humanColor);
+      opts = paikaMoves.filter(m=>m.from===i);
+    }
+    return opts;
+  }
+
+  function computeChainTargets(){
+    const {piecePos, visited, lastDir} = state.chain;
+    let opts=[];
+    for(const d of getLegalDirs(piecePos)){
+      if(lastDir && d[0]===lastDir[0] && d[1]===lastDir[1]) continue;
+      const o = findStepOptions(state.board, piecePos, d, state.humanColor);
+      if(!o) continue;
+      for(const opt of o){
+        if(opt.type==='paika') continue;
+        if(visited.has(opt.to)) continue;
+        opts.push({from:piecePos, ...opt});
+      }
+    }
+    return opts;
+  }
+
+  function onPointClick(i){
+    if(state.gameOver || state.turn!==state.humanColor || state.aiThinking) return;
+
+    if(state.chain){
+      const opts = computeChainTargets();
+      const matches = opts.filter(o=>o.to===i);
+      if(matches.length===0) return;
+      handleChosenStep(matches);
+      return;
+    }
+
+    // no active chain
+    if(state.selected===null){
+      if(state.board[i]!==state.humanColor) return;
+      const opts = computeValidTargetsForSelection(i);
+      if(opts.length===0){ setStatus('Essa peça não tem jogadas disponíveis.'); return; }
+      state.selected = i;
+      state.validTargets = opts.map(o=>o.to);
+      setStatus('Escolha o destino para a peça em ' + coordLabel(i) + '.');
+      render();
+      return;
+    }
+
+    if(i===state.selected){
+      state.selected=null; state.validTargets=[];
+      setStatus('Seleção cancelada. Escolha uma peça sua.');
+      render();
+      return;
+    }
+
+    if(state.board[i]===state.humanColor){
+      const opts = computeValidTargetsForSelection(i);
+      if(opts.length===0){ setStatus('Essa peça não tem jogadas disponíveis.'); return; }
+      state.selected = i;
+      state.validTargets = opts.map(o=>o.to);
+      render();
+      return;
+    }
+
+    const opts = computeValidTargetsForSelection(state.selected).filter(o=>o.to===i);
+    if(opts.length===0) return;
+    handleChosenStep(opts);
+  }
+
+  function handleChosenStep(opts){
+    if(opts.length>1){
+      // approach vs withdraw ambiguity
+      showCaptureChoice(opts);
+      return;
+    }
+    executeStep(opts[0]);
+  }
+
+  function showCaptureChoice(opts){
+    const box = document.getElementById('captureChoice');
+    box.classList.remove('hidden');
+    const approach = opts.find(o=>o.type==='approach');
+    const withdraw = opts.find(o=>o.type==='withdraw');
+    document.getElementById('choiceApproach').onclick = ()=>{ box.classList.add('hidden'); executeStep(approach); };
+    document.getElementById('choiceWithdraw').onclick = ()=>{ box.classList.add('hidden'); executeStep(withdraw); };
+  }
+
+  function executeStep(step){
+    const from = step.from;
+    state.board = applyStep(state.board, step, state.humanColor);
+    state.selected = null;
+    state.validTargets = [];
+    state.currentTurnCaptured += step.captured.length;
+
+    if(step.captured.length>0){
+      MusicEngine.blip(660,'square');
+      addLog(coordLabel(from)+' → '+coordLabel(step.to)+' (captura '+step.captured.length+')');
+      const visited = new Set([from, step.to]);
+      state.chain = {piecePos: step.to, visited, lastDir: step.dir};
+      const cont = computeChainTargets();
+      if(cont.length>0){
+        state.validTargets = cont.map(o=>o.to);
+        setStatus('Captura! Continue capturando ou finalize a jogada.');
+        render();
+        return;
+      } else {
+        state.chain = null;
+        finishHumanTurn();
+        return;
+      }
+    } else {
+      MusicEngine.blip(340,'triangle');
+      addLog(coordLabel(from)+' → '+coordLabel(step.to));
+      finishHumanTurn();
+    }
+  }
+
+  document.getElementById('stopChainBtn').addEventListener('click', ()=>{
+    if(!state.chain) return;
+    state.chain = null;
+    state.validTargets = [];
+    finishHumanTurn();
+  });
+
+  function finishHumanTurn(){
+    checkGameOverOrContinue(state.aiColor);
+  }
+
+  const DRAW_LIMIT = 40;
+  function checkGameOverOrContinue(nextPlayer){
+    render();
+    const humanCount = state.board.filter(p=>p===state.humanColor).length;
+    const aiCount = state.board.filter(p=>p===state.aiColor).length;
+    if(humanCount===0){ endGame(state.aiColor, 'Todas as suas peças foram capturadas.'); return; }
+    if(aiCount===0){ endGame(state.humanColor, 'Você capturou todas as peças da IA!'); return; }
+
+    if(state.currentTurnCaptured>0) state.movesSinceCapture = 0;
+    else state.movesSinceCapture++;
+    state.currentTurnCaptured = 0;
+    if(state.movesSinceCapture >= DRAW_LIMIT){
+      endGame(null, DRAW_LIMIT+' lances sem nenhuma captura.');
+      return;
+    }
+
+    const moves = getAllFullMoves(state.board, nextPlayer);
+    if(moves.length===0){
+      endGame(other(nextPlayer), nextPlayer===state.humanColor? 'Você não tem jogadas possíveis.' : 'A IA ficou sem jogadas possíveis.');
+      return;
+    }
+
+    state.turn = nextPlayer;
+    if(nextPlayer===state.humanColor){
+      setStatus('Sua vez: escolha uma peça sua.');
+      render();
+    } else {
+      setStatus('A IA está pensando...');
+      state.aiThinking = true;
+      render();
+      setTimeout(()=>{ if(!state.gameOver) runAITurn(); }, 420);
+    }
+  }
+
+  function runAITurn(){
+    if(state.gameOver) return;
+    const seq = chooseAIMove(state.board, state.difficulty, state.aiColor);
+    state.aiThinking = false;
+    if(!seq){ endGame(state.humanColor, 'A IA ficou sem jogadas possíveis.'); return; }
+    let step = 0;
+    function playStep(){
+      if(state.gameOver) return;
+      const s = seq[step];
+      state.board = applyStep(state.board, s, state.aiColor);
+      state.currentTurnCaptured += s.captured.length;
+      MusicEngine.blip(s.captured.length? 500 : 260, s.captured.length? 'square':'triangle');
+      addLog('IA: '+coordLabel(s.from)+' → '+coordLabel(s.to) + (s.captured.length? ' (captura '+s.captured.length+')':''));
+      render();
+      step++;
+      if(step<seq.length){
+        setTimeout(()=>{ if(!state.gameOver) playStep(); }, 380);
+      } else {
+        checkGameOverOrContinue(state.humanColor);
+      }
+    }
+    playStep();
+  }
+
+  function endGame(winner, reason){
+    state.gameOver = true;
+    render();
+    // encerra a música in-game imediatamente: nunca toca junto com o jingle de resultado
+    MusicEngine.stop();
+    const banner = document.getElementById('winnerBanner');
+    const title = document.getElementById('winnerTitle');
+    const sub = document.getElementById('winnerSub');
+    let result = null;
+    if(winner==='interrupt'){
+      title.textContent = 'Partida interrompida';
+    } else if(winner===null){
+      title.textContent='Empate!'; result='draw';
+    } else if(winner===state.humanColor){
+      title.textContent='Você venceu!'; result='win';
+    } else {
+      title.textContent='A IA venceu'; result='loss';
+    }
+    sub.textContent = reason;
+    banner.classList.remove('hidden');
+    if(result){
+      MusicEngine.playJingle(result);
+      setStatus(result==='win'? 'Vitória! '+reason : result==='draw'? 'Empate. '+reason : 'Derrota. '+reason);
+      recordResult(state.difficulty, result);
+    } else {
+      setStatus('Partida interrompida. '+reason);
+    }
+  }
+
+  function forfeitGame(){
+    if(!state || state.gameOver) return;
+    state.chain = null;
+    document.getElementById('captureChoice').classList.add('hidden');
+    endGame('interrupt', 'Você interrompeu a partida.');
+  }
+
+  function startNewGame(){
+    const mode = currentColorMode();
+    if(mode==='random'){
+      showCoinFlip(beginMatch);
+    } else {
+      beginMatch(mode);
+    }
+  }
+
+  function showCoinFlip(callback){
+    const overlay = document.getElementById('coinFlipOverlay');
+    const coinEl = document.getElementById('coinEl');
+    const resultText = document.getElementById('coinResultText');
+    overlay.classList.remove('hidden');
+    resultText.textContent = 'Cara ou coroa...';
+    coinEl.style.transition = 'none';
+    coinEl.style.transform = 'rotateY(0deg)';
+    void coinEl.offsetWidth; // força o reset antes de animar de novo
+    const heads = Math.random() < 0.5; // cara = Brancas para quem tirou
+    const finalDeg = 4*360 + (heads? 0 : 180);
+    requestAnimationFrame(()=>{
+      coinEl.style.transition = 'transform 1.15s cubic-bezier(.2,.8,.2,1)';
+      coinEl.style.transform = 'rotateY('+finalDeg+'deg)';
+    });
+    setTimeout(()=>{
+      const humanColor = heads ? 'W' : 'B';
+      resultText.textContent = heads
+        ? 'Cara! Você fica com as Brancas e começa.'
+        : 'Coroa! A IA fica com as Brancas e começa.';
+      MusicEngine.blip(heads? 720:260, 'triangle');
+      setTimeout(()=>{
+        overlay.classList.add('hidden');
+        callback(humanColor);
+      }, 5000);
+    }, 1200);
+  }
+
+  function beginMatch(humanColor){
+    state = newState(humanColor);
+    buildBoardSVG();
+    document.getElementById('winnerBanner').classList.add('hidden');
+    document.getElementById('captureChoice').classList.add('hidden');
+    document.getElementById('log').innerHTML='';
+    if(musicEnabled) MusicEngine.start();
+    if(state.turn===state.humanColor){
+      setStatus('Escolha uma peça sua para começar.');
+      render();
+    } else {
+      setStatus('A IA ('+(state.aiColor==='W'?'Brancas':'Pretas')+') começa a partida...');
+      render();
+      state.aiThinking = true;
+      render();
+      setTimeout(()=>{ if(!state.gameOver) runAITurn(); }, 420);
+    }
+  }
+
+  document.getElementById('newGameBtn').addEventListener('click', startNewGame);
+  document.getElementById('forfeitBtn').addEventListener('click', forfeitGame);
+  document.getElementById('playAgainBtn').addEventListener('click', startNewGame);
+  document.getElementById('rulesToggle').addEventListener('click', ()=>{
+    document.getElementById('rulesBox').classList.toggle('open');
+  });
+  document.querySelectorAll('#diffControl .seg-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('#diffControl .seg-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      if(state) state.difficulty = btn.dataset.diff;
+    });
+  });
+  document.querySelectorAll('#colorControl .seg-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('#colorControl .seg-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      startNewGame();
+    });
+  });
+
+  const musicBtn = document.getElementById('musicToggleBtn');
+  const trackLabel = document.getElementById('trackLabel');
+  let musicEnabled = false; // preferência do usuário; independente do silêncio pós-partida
+  function updateTrackLabel(){
+    trackLabel.textContent = 'Faixa ' + (MusicEngine.index+1) + '/3 · ' + MusicEngine.trackName;
+  }
+  musicBtn.addEventListener('click', ()=>{
+    musicEnabled = !musicEnabled;
+    if(musicEnabled){
+      musicBtn.textContent = '🔊 Música: ligada';
+      musicBtn.classList.add('on');
+      if(state && !state.gameOver) MusicEngine.start(); // se a partida acabou, fica em silêncio até o próximo jogo
+    } else {
+      musicBtn.textContent = '🔇 Música: desligada';
+      musicBtn.classList.remove('on');
+      MusicEngine.stop();
+    }
+  });
+  document.querySelectorAll('#styleControl .seg-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('#styleControl .seg-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      MusicEngine.setTrack(btn.dataset.style, 0);
+      updateTrackLabel();
+    });
+  });
+  document.getElementById('trackNextBtn').addEventListener('click', ()=>{
+    const nextIndex = (MusicEngine.index+1) % 3;
+    MusicEngine.setTrack(MusicEngine.style, nextIndex);
+    updateTrackLabel();
+  });
+  updateTrackLabel();
+
+  document.getElementById('resetStatsBtn').addEventListener('click', ()=>{
+    stats = { easy:{w:0,d:0,l:0}, medium:{w:0,d:0,l:0}, hard:{w:0,d:0,l:0} };
+    saveStats(stats);
+    renderStats();
+  });
+
+  renderStats();
+  startNewGame();
+
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', ()=>{
+      navigator.serviceWorker.register('sw.js').catch(()=>{});
+    });
+  }
+})();

@@ -1,0 +1,16 @@
+{
+  "name": "Fanorona",
+  "short_name": "Fanorona",
+  "description": "Jogo de tabuleiro malgaxe de captura — jogue contra a IA em 3 níveis de dificuldade.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1c140d",
+  "theme_color": "#241a11",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
